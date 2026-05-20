@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Taxoin Wallet</title>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<style>
+:root{--bg:#0a0a0a;--surface:#1a1a1a;--accent:#f0b90b;--text:#fff;--muted:#888;--err:#ff4444}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:var(--bg);color:var(--text);padding:16px;max-width:480px;margin:auto}
+h1{font-size:24px;margin-bottom:8px;color:var(--accent)}
+.card{background:var(--surface);border-radius:12px;padding:16px;margin-bottom:12px}
+.balance{font-size:36px;font-weight:bold;color:var(--accent)}
+.addr{font-size:12px;color:var(--muted);word-break:break-all}
+.btn{background:var(--accent);color:#000;border:none;padding:12px 24px;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;width:100%;margin-bottom:8px}
+.btn:active{opacity:.8}
+.btn-secondary{background:var(--surface);color:var(--accent);border:1px solid var(--accent)}
+input,select{width:100%;padding:12px;background:#2a2a2a;border:1px solid #333;color:var(--text);border-radius:8px;font-size:16px;margin-bottom:8px}
+.hidden{display:none}
+.tx{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #222}
+.qr-container{display:flex;justify-content:center;margin:16px 0}
+#qrcode canvas{max-width:200px}
+.tab-bar{display:flex;gap:8px;margin-bottom:16px}
+.tab{padding:8px 16px;border-radius:8px;cursor:pointer;background:var(--surface);color:var(--muted);text-align:center;flex:1}
+.tab.active{background:var(--accent);color:#000;font-weight:bold}
+.error{color:var(--err);font-size:14px;margin-bottom:8px}
+</style>
+</head>
+<body>
+
+<h1>Ⓣ Taxoin</h1>
+
+<div id="keyNotice" class="card" style="border-left:3px solid var(--accent)">
+  <strong>⚠️ Приватный ключ хранится только у вас.</strong><br>
+  <span style="font-size:14px;color:var(--muted)">
+  Скачайте и сохраните. Без ключа доступ к кошельку невозможен.</span>
+</div>
+
+<!-- Tab bar -->
+<div class="tab-bar">
+  <div class="tab active" onclick="switchTab('wallet')">Кошелёк</div>
+  <div class="tab" onclick="switchTab('send')">Отправить</div>
+  <div class="tab" onclick="switchTab('receive')">Получить</div>
+  <div class="tab" onclick="switchTab('services')">Услуги</div>
+</div>
+
+<!-- Wallet tab -->
+<div id="tab-wallet" class="tab-content">
+  <div class="card" id="walletCard">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span class="balance" id="balanceDisplay">0.00</span>
+      <span style="font-size:14px">Ⓣ</span>
+    </div>
+    <div class="addr" id="addressDisplay"></div>
+  </div>
+  <button class="btn" onclick="createWallet()" id="createBtn">Создать кошелёк</button>
+  <button class="btn btn-secondary" onclick="loadWallet()" id="loadBtn">Загрузить ключ</button>
+  <input type="file" id="keyFileInput" accept=".json" style="display:none" onchange="importKeyFile(event)">
+  <div id="txHistory"></div>
+</div>
+
+<!-- Send tab -->
+<div id="tab-send" class="tab-content hidden">
+  <div class="card">
+    <input placeholder="Адрес получателя" id="sendAddr">
+    <input type="number" placeholder="Сумма в Ⓣ" id="sendAmount" step="0.01" min="0.01">
+    <input placeholder="Описание (необязательно)" id="sendDesc">
+    <button class="btn" onclick="sendTx()">Отправить</button>
+    <div id="sendResult"></div>
+  </div>
+</div>
+
+<!-- Receive tab -->
+<div id="tab-receive" class="tab-content hidden">
+  <div class="card">
+    <div style="text-align:center;margin-bottom:12px">
+      <strong>Ваш адрес для получения Ⓣ</strong>
+    </div>
+    <div class="qr-container" id="qrcode"></div>
+    <div class="addr" id="receiveAddress" style="text-align:center;margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- Services tab -->
+<div id="tab-services" class="tab-content hidden">
+  <div class="card">
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <select id="serviceTypeFilter" onchange="loadServices()">
+        <option value="">Все услуги</option>
+        <option value="sms">SMS</option>
+        <option value="gpu">GPU</option>
+        <option value="taxi">Такси</option>
+        <option value="api">API</option>
+        <option value="expertise">Экспертиза</option>
+      </select>
+    </div>
+    <div id="serviceList"></div>
+  </div>
+</div>
+
+<script>
+const API = 'http://' + (location.hostname || 'localhost') + ':47780';
+let wallet = JSON.parse(localStorage.getItem('taxoin_wallet') || 'null');
+
+function $(id) { return document.getElementById(id) }
+
+function switchTab(name) {
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  $(`tab-${name}`).classList.remove('hidden');
+  document.querySelector(`.tab[onclick="switchTab('${name}')"]`).classList.add('active');
+  if (name === 'receive') generateQR();
+  if (name === 'services') loadServices();
+}
+
+async function api(method, path, body) {
+  try {
+    const opts = { method, headers: {'Content-Type':'application/json'} };
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(API + path, opts);
+    return await r.json();
+  } catch(e) { return { error: e.message } }
+}
+
+async function createWallet() {
+  const data = await api('POST', '/api/wallet');
+  if (data.error) { alert('Ошибка: ' + data.error); return }
+  wallet = { address: data.address, privateKey: data.private_key };
+  localStorage.setItem('taxoin_wallet', JSON.stringify(wallet));
+  updateUI();
+  // Save key file
+  const blob = new Blob([JSON.stringify({address:data.address,privateKey:data.private_key},null,2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `taxoin-${data.address.slice(0,10)}.json`;
+  a.click();
+}
+
+function loadWallet() {
+  $('keyFileInput').click();
+}
+
+function importKeyFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const data = JSON.parse(e.target.result);
+      wallet = { address: data.address, privateKey: data.privateKey };
+      localStorage.setItem('taxoin_wallet', JSON.stringify(wallet));
+      updateUI();
+    } catch(err) { alert('Ошибка загрузки ключа'); }
+  };
+  reader.readAsText(file);
+}
+
+async function updateUI() {
+  if (!wallet) {
+    $('balanceDisplay').textContent = '0.00';
+    $('addressDisplay').textContent = 'Нет кошелька';
+    $('receiveAddress').textContent = '';
+    return;
+  }
+  $('addressDisplay').textContent = wallet.address;
+  $('receiveAddress').textContent = wallet.address;
+  const data = await api('GET', `/api/balance/${wallet.address}`);
+  $('balanceDisplay').textContent = (data.balance || 0).toFixed(2);
+  if ($('qrcode').innerHTML === '') generateQR();
+  loadTxHistory();
+}
+
+function generateQR() {
+  if (!wallet) return;
+  $('qrcode').innerHTML = '';
+  new QRCode($('qrcode'), { text: `taxoin:pay?to=${wallet.address}`, width: 180, height: 180 });
+}
+
+async function sendTx() {
+  if (!wallet) { $('sendResult').innerHTML = '<div class="error">Создайте кошелёк</div>'; return }
+  const to = $('sendAddr').value.trim();
+  const amount = parseFloat($('sendAmount').value);
+  const desc = $('sendDesc').value.trim();
+  if (!to || !amount) { $('sendResult').innerHTML = '<div class="error">Заполните поля</div>'; return }
+
+  // Sign as consumer
+  const sigData = `${wallet.address}:${to}:${amount}:svc:${to}`;
+  // Note: in real production, use Web Crypto API for client-side signing
+  // For MVP, we pass the consumer address and mark as pending
+
+  const result = await api('POST', '/api/tx/send', {
+    consumer: wallet.address,
+    provider: to,
+    amount: amount,
+    service_ref: `svc:${to}`,
+    consumer_sig: 'signed_' + sigData.slice(0, 16),
+    provider_sig: '',
+    description: desc,
+  });
+
+  if (result.tx_id) {
+    $('sendResult').innerHTML = `<div style="color:#4caf50">✓ Отправлено: ${result.tx_id.slice(0,16)}...</div>`;
+    $('sendAddr').value = ''; $('sendAmount').value = ''; $('sendDesc').value = '';
+    setTimeout(updateUI, 1000);
+  } else {
+    $('sendResult').innerHTML = `<div class="error">Ошибка: ${JSON.stringify(result)}</div>`;
+  }
+}
+
+async function loadServices() {
+  const type = $('serviceTypeFilter').value;
+  const data = await api('GET', `/api/services?service_type=${type}`);
+  const list = $('serviceList');
+  if (!Array.isArray(data) || data.length === 0) {
+    list.innerHTML = '<div style="color:var(--muted)">Нет зарегистрированных услуг</div>';
+    return;
+  }
+  list.innerHTML = data.map(s => `
+    <div class="card" style="cursor:pointer" onclick="payService('${s.provider}')">
+      <div style="display:flex;justify-content:space-between">
+        <strong>${s.service_type}</strong>
+        <span style="color:var(--accent)">${s.price_per_unit} Ⓣ</span>
+      </div>
+      <div style="font-size:14px;color:var(--muted)">${s.description}</div>
+      <div style="font-size:12px;color:var(--muted)">${s.provider.slice(0,16)}… ★${s.rating.toFixed(1)} (${s.total_tx} tx)</div>
+    </div>
+  `).join('');
+}
+
+function payService(provider) {
+  $('sendAddr').value = provider;
+  $('sendAmount').value = '';
+  $('sendDesc').value = 'Оплата услуги';
+  switchTab('send');
+}
+
+async function loadTxHistory() {
+  // Simple: show only status for now
+}
+
+// Init
+if (wallet) { updateUI(); $('createBtn').textContent = 'Создать новый кошелёк' }
+</script>
+</body>
+</html>

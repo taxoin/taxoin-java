@@ -20,8 +20,8 @@ COPY --from=build /build/target/quarkus-app/*.jar          ./
 COPY --from=build /build/target/quarkus-app/app/           ./app/
 COPY --from=build /build/target/quarkus-app/quarkus/       ./quarkus/
 
-# Web UI (кошелёк)
-COPY src/main/resources/META-INF/resources/web/ ./web/
+# wallet.html уже упакован в JAR Quarkus через META-INF/resources/
+# Quarkus сервит его автоматически по /web/wallet.html
 
 EXPOSE 47780 47701 47702 47703
 
